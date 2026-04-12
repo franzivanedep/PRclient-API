@@ -6,8 +6,8 @@ const knex = require('knex')({
   client: 'mysql2',
   connection: {
     host: '0.0.0.0',
-    user: 'root',
-    password: '', 
+    user: 'zombie',
+    password: 'andrei', 
     database: 'client'
   }
 });
@@ -25,7 +25,7 @@ async function initDb() {
       await knex.schema.createTable('users', (table) => {
         table.increments('id').primary();
         table.string('email').unique().notNullable();
-        table.string('password').notNullable(); // In production, use hashing like bcrypt!
+        table.string('password').notNullable(); 
       });
       console.log("Table 'users' created.");
     }
@@ -53,6 +53,29 @@ async function initDb() {
       });
       console.log("Table 'payments' created.");
     }
+
+    // --- ADDED: Commission Clients Table ---
+    const hasCommClients = await knex.schema.hasTable('commission_clients');
+    if (!hasCommClients) {
+      await knex.schema.createTable('commission_clients', (table) => {
+        table.string('id', 36).primary();
+        table.string('name').notNullable();
+      });
+      console.log("Table 'commission_clients' created.");
+    }
+
+    // --- ADDED: Commission Projects Table ---
+    const hasCommProjects = await knex.schema.hasTable('commission_projects');
+    if (!hasCommProjects) {
+      await knex.schema.createTable('commission_projects', (table) => {
+        table.increments('id').primary();
+        table.string('clientId', 36).notNullable();
+        table.string('description').notNullable();
+        table.foreign('clientId').references('commission_clients.id').onDelete('CASCADE');
+      });
+      console.log("Table 'commission_projects' created.");
+    }
+
   } catch (err) {
     console.error("Database initialization failed:", err.message);
   }
@@ -61,27 +84,20 @@ async function initDb() {
 initDb();
 
 // --- Auth Route ---
-
 app.post('/api/login', async (req, res) => {
   const { email, password } = req.body;
-
   try {
     const user = await knex('users').where({ email }).first();
-
     if (!user || user.password !== password) {
       return res.status(401).json({ error: "Invalid email or password" });
     }
-
-    // For a simple local setup, we just return success. 
-    // In production, you would return a JWT token here.
     res.json({ message: "Login successful", userId: user.id });
   } catch (err) {
     res.status(500).json({ error: "Database error" });
   }
 });
 
-// --- Existing API Routes ---
-
+// --- Existing Recurring API Routes ---
 app.get('/api/clients', async (req, res) => {
   const clients = await knex('clients').select('*');
   res.json(clients);
@@ -122,5 +138,72 @@ app.post('/api/payments/toggle', async (req, res) => {
   }
 });
 
+// --- ADDED: Commission API Routes ---
+
+app.get('/api/commission-clients', async (req, res) => {
+  try {
+    const clients = await knex('commission_clients').select('*');
+    const projects = await knex('commission_projects').select('*');
+
+    const formattedData = clients.map(client => ({
+      ...client,
+      projects: projects
+        .filter(p => p.clientId === client.id)
+        .map(p => p.description)
+    }));
+    res.json(formattedData);
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.post('/api/commission-clients', async (req, res) => {
+  const { name } = req.body;
+  try {
+    const newClient = { id: crypto.randomUUID(), name };
+    await knex('commission_clients').insert(newClient);
+    res.status(201).json({ ...newClient, projects: [] });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.delete('/api/commission-clients/:id', async (req, res) => {
+  try {
+    await knex('commission_clients').where({ id: req.params.id }).del();
+    res.status(204).end();
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+app.put('/api/commission-clients/:id/projects', async (req, res) => {
+  const { id } = req.params;
+  const { projects } = req.body;
+  try {
+    await knex.transaction(async (trx) => {
+      await trx('commission_projects').where({ clientId: id }).del();
+      if (projects && projects.length > 0) {
+        const toInsert = projects.map(desc => ({ 
+          clientId: id, 
+          description: desc 
+        }));
+        await trx('commission_projects').insert(toInsert);
+      }
+    });
+    res.json({ success: true });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+});
+
+// --- Status and Listener ---
+app.get('/', (req, res) => {
+  res.status(200).json({
+    status: 'ok',
+    message: 'API is running'
+  });
+});
+
 const PORT = 3001;
-app.listen(PORT, () => console.log(`${PORT}`));
+app.listen(PORT, () => console.log(`Server running on port ${PORT}`));
