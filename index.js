@@ -5,9 +5,9 @@ const crypto = require('crypto');
 const knex = require('knex')({
   client: 'mysql2',
   connection: {
-    host: '127.0.0.1',
+    host: '0.0.0.0',
     user: 'root',
-    password: '', // Default XAMPP password is empty
+    password: '', 
     database: 'client'
   }
 });
@@ -123,4 +123,4 @@ app.post('/api/payments/toggle', async (req, res) => {
 });
 
 const PORT = 3001;
-app.listen(PORT, () => console.log(`Backend running at http://localhost:${PORT}`));
+app.listen(PORT, () => console.log(`${PORT}`));
