@@ -13,8 +13,37 @@ const knex = require('knex')({
 });
 
 const app = express();
-app.use(cors());
+
+// --- 1. UPDATED CORS CONFIGURATION ---
+// This allows your frontend to send the 'x-api-key' header
+app.use(cors({
+  origin: '*', 
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'x-api-key'] 
+}));
+
 app.use(express.json());
+
+// --- 2. API KEY SECURITY LOGIC ---
+const SAFE_API_KEY = "kP9x!V4mQz7@L2sT8#nR6wY1uH5dJ0bC#";
+
+const authenticateApiKey = (req, res, next) => {
+  // Allow browser preflight (OPTIONS) requests to pass without a key
+  if (req.method === 'OPTIONS') {
+    return next();
+  }
+
+  const userKey = req.headers['x-api-key'];
+  
+  if (!userKey || userKey !== SAFE_API_KEY) {
+    console.log(`[Security] Blocked request from ${req.ip}. Key provided: ${userKey}`);
+    return res.status(403).json({ error: "Unauthorized: Invalid API Key" });
+  }
+  next();
+};
+
+// Apply the security check to all routes starting with /api
+app.use('/api', authenticateApiKey);
 
 // --- Database Schema Setup ---
 async function initDb() {
@@ -54,7 +83,7 @@ async function initDb() {
       console.log("Table 'payments' created.");
     }
 
-    // --- ADDED: Commission Clients Table ---
+    // Commission Clients Table
     const hasCommClients = await knex.schema.hasTable('commission_clients');
     if (!hasCommClients) {
       await knex.schema.createTable('commission_clients', (table) => {
@@ -64,7 +93,7 @@ async function initDb() {
       console.log("Table 'commission_clients' created.");
     }
 
-    // --- ADDED: Commission Projects Table ---
+    // Commission Projects Table
     const hasCommProjects = await knex.schema.hasTable('commission_projects');
     if (!hasCommProjects) {
       await knex.schema.createTable('commission_projects', (table) => {
@@ -138,8 +167,7 @@ app.post('/api/payments/toggle', async (req, res) => {
   }
 });
 
-// --- ADDED: Commission API Routes ---
-
+// --- Commission API Routes ---
 app.get('/api/commission-clients', async (req, res) => {
   try {
     const clients = await knex('commission_clients').select('*');
