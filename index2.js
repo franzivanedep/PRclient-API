@@ -560,14 +560,30 @@ async function upsertWeightLog(userId, weightInput) {
 }
 
 async function getWeightProgress(userId) {
+  console.log('getWeightProgress called for userId:', userId);
   const rows = await knex('weight_logs').where({ user_id: userId }).orderBy('week_start', 'desc').orderBy('updated_at', 'desc');
+  console.log('Weight rows from database:', rows);
   const currentWeekStart = toDateKey(getWeekStart(new Date()));
-  const current = rows.find((row) => row.week_start === currentWeekStart) || null;
-  const previous = rows.find((row) => row.week_start < currentWeekStart) || null;
+  console.log('Current week start:', currentWeekStart);
+  
+  // Normalize database week_start to string format for comparison
+  const normalizedRows = rows.map(row => ({
+    ...row,
+    week_start_normalized: typeof row.week_start === 'string' 
+      ? row.week_start.includes('T') ? row.week_start.split('T')[0] : row.week_start
+      : toDateKey(new Date(row.week_start))
+  }));
+  console.log('Normalized rows:', normalizedRows);
+  
+  const current = normalizedRows.find((row) => row.week_start_normalized === currentWeekStart) || null;
+  const previous = normalizedRows.find((row) => row.week_start_normalized < currentWeekStart) || null;
+  console.log('Current week entry:', current);
+  console.log('Previous week entry:', previous);
+  
   const delta = current && previous ? Number((Number(current.weight_value) - Number(previous.weight_value)).toFixed(2)) : null;
   const percentChange = current && previous && Number(previous.weight_value) !== 0 ? Number((((Number(current.weight_value) - Number(previous.weight_value)) / Number(previous.weight_value)) * 100).toFixed(2)) : null;
 
-  return {
+  const result = {
     currentWeekStart,
     currentWeight: current ? Number(current.weight_value) : null,
     previousWeight: previous ? Number(previous.weight_value) : null,
@@ -577,6 +593,10 @@ async function getWeightProgress(userId) {
     unit: current?.unit || previous?.unit || 'kg',
     entries: rows.map(mapWeightRow),
   };
+  console.log('Weight progress result:', result);
+  console.log('Result currentWeight type:', typeof result.currentWeight);
+  console.log('Result currentWeight value:', result.currentWeight);
+  return result;
 }
 
 app.get('/health', (req, res) => res.json({ success: true, data: { status: 'healthy' } }));
@@ -988,11 +1008,19 @@ app.post(
   '/api/weight',
   requireSessionAuth,
   asyncHandler(async (req, res) => {
+    console.log('Weight POST request:', req.body);
     const userId = req.body.userId || req.session.activeProfileUserId;
+    console.log('User ID:', userId);
     const profileUser = await getProfileUserById(userId);
     if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
 
+    // Ensure weight logs table exists
+    await ensureWeightLogsTable();
+    
     const weightProgress = await upsertWeightLog(userId, req.body || {});
+    console.log('Weight progress result:', weightProgress);
+    console.log('Weight progress currentWeight:', weightProgress.currentWeight);
+    console.log('Weight progress currentWeight type:', typeof weightProgress.currentWeight);
     res.status(201).json({ success: true, data: { user: profileUser, weightProgress } });
   }),
 );
