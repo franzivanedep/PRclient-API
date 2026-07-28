@@ -1,15 +1,14 @@
 const express = require('express');
-const crypto = require('crypto');
 const cors = require('cors');
 
 const knex = require('knex')({
   client: 'mysql2',
   connection: {
-  host: 'localhost',      // or 'localhost'
+    host: 'localhost',      // or 'localhost'
     port: 3306,
-    user: 'root',
-    password: '',           // Default XAMPP password is empty
-    database: 'fitness',
+    user: 'zombie',
+    password: 'andrei',           // Default XAMPP password is empty
+    database: 'fitnessdb',
   },
 });
 
@@ -18,14 +17,17 @@ const PORT = Number(process.env.PORT || 4000);
 
 const app = express();
 
-// --- 1. UPDATED CORS CONFIGURATION ---
-// This allows your frontend to send the 'x-api-key' header
+// Behind a hosting proxy (Render/Railway/etc.) so req.secure and
+// req.headers['x-forwarded-proto'] reflect the real client protocol.
+app.set('trust proxy', 1);
+
+// --- 1. CORS CONFIGURATION ---
+// This allows your frontend to send the 'x-api-key' and 'x-user-id' headers
 app.use(cors({
   origin: [
     "https://g-fitness-mauve.vercel.app"
   ],
-  credentials:true,
-  methods:[
+  methods: [
     'GET',
     'POST',
     'PUT',
@@ -33,140 +35,23 @@ app.use(cors({
     'DELETE',
     'OPTIONS'
   ],
-  allowedHeaders:[
+  allowedHeaders: [
     'Content-Type',
     'x-api-key',
+    'x-user-id',
     'Authorization'
   ],
 }));
-app.use(express.json());
 
-// ---------- lightweight in-memory cookie session (replaces express-session) ----------
-const SESSION_COOKIE_NAME = 'g_fitness_sid';
-const DEFAULT_SESSION_MAX_AGE = 1000 * 60 * 60 * 24 * 7; // 7 days
-
-// sessionId -> { authUserId, activeProfileUserId, expiresAt }
-const sessionStore = new Map();
-
-function parseCookies(cookieHeader) {
-  const cookies = {};
-  if (!cookieHeader) return cookies;
-  cookieHeader.split(';').forEach((pair) => {
-    const idx = pair.indexOf('=');
-    if (idx < 0) return;
-    const key = pair.slice(0, idx).trim();
-    const value = pair.slice(idx + 1).trim();
-    if (!key) return;
-    try {
-      cookies[key] = decodeURIComponent(value);
-    } catch {
-      cookies[key] = value;
-    }
-  });
-  return cookies;
-}
-
-function serializeCookie(name, value, { maxAgeMs, clear = false, secure = false } = {}) {
- const parts = [
-  `${name}=${encodeURIComponent(value)}`,
-  'HttpOnly',
-  'Path=/',
-  'SameSite=None'
-];
-
-  // Only add Secure for production/HTTPS environments
-  if (secure) {
-    parts.push('Secure');
-  }
-
-  if (clear) {
-    parts.push('Expires=Thu, 01 Jan 1970 00:00:00 GMT');
-  } else if (maxAgeMs) {
-    parts.push(`Max-Age=${Math.floor(maxAgeMs / 1000)}`);
-  }
-
-  return parts.join('; ');
-}
-function sessionMiddleware(req, res, next) {
-  const cookies = parseCookies(req.headers.cookie);
-    console.log("COOKIE HEADER:", req.headers.cookie);
-  console.log("PARSED SID:", cookies[SESSION_COOKIE_NAME]);
-  console.log("SESSION EXISTS:", sessionStore.has(cookies[SESSION_COOKIE_NAME]));
-  let sid = cookies[SESSION_COOKIE_NAME];
-  let record = sid ? sessionStore.get(sid) : undefined;
-
-  if (record && record.expiresAt < Date.now()) {
-    sessionStore.delete(sid);
-    record = undefined;
-    sid = undefined;
-  }
-
-  if (!record) {
-    record = { authUserId: undefined, activeProfileUserId: undefined, expiresAt: Date.now() + DEFAULT_SESSION_MAX_AGE };
-  }
-
-  const sessionApi = {
-    cookie: { maxAge: DEFAULT_SESSION_MAX_AGE },
-
-    get authUserId() {
-      return record.authUserId;
-    },
-    set authUserId(value) {
-      record.authUserId = value;
-    },
-    get activeProfileUserId() {
-      return record.activeProfileUserId;
-    },
-    set activeProfileUserId(value) {
-      record.activeProfileUserId = value;
-    },
-
-    regenerate(callback) {
-      if (sid) sessionStore.delete(sid);
-      sid = crypto.randomBytes(24).toString('hex');
-      record = { authUserId: undefined, activeProfileUserId: undefined, expiresAt: Date.now() + sessionApi.cookie.maxAge };
-      sessionStore.set(sid, record);
-      callback(null);
-    },
-
-    save(callback) {
-      if (!sid) {
-        sid = crypto.randomBytes(24).toString('hex');
-      }
-      record.expiresAt = Date.now() + sessionApi.cookie.maxAge;
-      sessionStore.set(sid, record);
-      // Use Secure flag if request is HTTPS (production) or if explicitly set
-      const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https';
-      res.setHeader('Set-Cookie', serializeCookie(SESSION_COOKIE_NAME, sid, { maxAgeMs: sessionApi.cookie.maxAge, secure: isSecure }));
-      callback(null);
-    },
-
-    destroy(callback) {
-      if (sid) sessionStore.delete(sid);
-      // Use Secure flag if request is HTTPS (production) or if explicitly set
-      const isSecure = req.secure || req.headers['x-forwarded-proto'] === 'https';
-      res.setHeader('Set-Cookie', serializeCookie(SESSION_COOKIE_NAME, '', { clear: true, secure: isSecure }));
-      callback(null);
-    },
-  };
-
-  if (sid && !sessionStore.has(sid)) {
-    sessionStore.set(sid, record);
-  }
-
-  req.session = sessionApi;
+// Prevent Safari from caching responses
+app.use((req, res, next) => {
+  res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate, proxy-revalidate');
+  res.setHeader('Pragma', 'no-cache');
+  res.setHeader('Expires', '0');
   next();
-}
+});
 
-// periodically sweep expired sessions so the in-memory store doesn't grow unbounded
-setInterval(() => {
-  const now = Date.now();
-  for (const [sid, record] of sessionStore.entries()) {
-    if (record.expiresAt < now) sessionStore.delete(sid);
-  }
-}, 1000 * 60 * 10).unref();
-
-app.use(sessionMiddleware);
+app.use(express.json());
 
 // --- 2. API KEY SECURITY LOGIC ---
 const SAFE_API_KEY = "kP9x!V4mQz7@L2sT8#nR6wY1uH5dJ0bC#";
@@ -182,8 +67,17 @@ function requireApiKey(req, res, next) {
   next();
 }
 
-function requireSessionAuth(req, res, next) {
-  if (req.session?.authUserId) return next();
+// Stateless auth: valid requests must present the shared API key together with
+// a userId (from body, query string, or the x-user-id header — the same key
+// the frontend already stores in localStorage).
+function requireAuth(req, res, next) {
+  const apiKey = req.get('x-api-key');
+  const userId = req.body?.userId || req.query?.userId || req.get('x-user-id');
+
+  if (apiKey === SAFE_API_KEY && userId) {
+    return next();
+  }
+
   res.status(401).json({ success: false, message: 'Authentication required.' });
 }
 
@@ -246,6 +140,13 @@ function getWeekDates(weekStartKey) {
   });
 }
 
+// Resolve which profile userId a request is acting on. Priority: request
+// body -> query string -> x-user-id header. There is no session fallback —
+// the frontend is expected to always send the userId it has in localStorage.
+function getEffectiveUserId(req) {
+  return req.body?.userId || req.query?.userId || req.get('x-user-id');
+}
+
 function getReminderMessage(workoutDays) {
   if (workoutDays >= WEEKLY_WORKOUT_GOAL) return 'You have reached your weekly fitness goal. Great job!';
   const remaining = Math.max(0, WEEKLY_WORKOUT_GOAL - workoutDays);
@@ -261,6 +162,9 @@ async function getActivitiesById() {
 }
 
 async function getProfileUserById(userId) {
+  if (!userId) {
+    return null;
+  }
   return knex('app_users').where({ id: userId, is_active: 1 }).first();
 }
 
@@ -314,6 +218,7 @@ async function ensureCurrentWeek(userId, referenceDate = new Date()) {
     .where({ id })
     .first();
 }
+
 async function getOrCreateWeekForDate(userId, dateKey) {
   const weekStart = toDateKey(getWeekStart(fromDateKey(dateKey)));
   const weekEnd = toDateKey(getWeekEnd(fromDateKey(dateKey)));
@@ -336,12 +241,9 @@ async function getOrCreateDay(weekId, dateKey) {
 }
 
 async function loadWeekWithDays(week) {
-  console.log('loadWeekWithDays called with week:', week);
   const dateKeys = getWeekDates(week.week_start);
-  console.log('Generated dateKeys:', dateKeys);
   const days = await knex('tracker_days').where({ week_id: week.id });
-  console.log('Days from database:', days);
-  
+
   // Normalize database date keys to simple format (remove time component)
   const dayByDate = new Map();
   for (const day of days) {
@@ -356,22 +258,18 @@ async function loadWeekWithDays(week) {
   }
 
   const dayIds = days.map((d) => d.id);
-  console.log('Day IDs:', dayIds);
   const activityLinks = dayIds.length ? await knex('tracker_day_activities').whereIn('day_id', dayIds) : [];
-  console.log('Activity links from database:', activityLinks);
   const linksByDay = new Map();
   for (const link of activityLinks) {
     if (!linksByDay.has(link.day_id)) linksByDay.set(link.day_id, []);
     linksByDay.get(link.day_id).push(link.activity_id);
   }
-  console.log('Links by day ID:', linksByDay);
 
   const result = { weekStart: week.week_start, weekEnd: week.week_end, status: week.status, days: {} };
   for (const dateKey of dateKeys) {
     const day = dayByDate.get(dateKey);
     result.days[dateKey] = { date: dateKey, activityIds: day ? linksByDay.get(day.id) || [] : [] };
   }
-  console.log('Result:', result);
   return result;
 }
 
@@ -432,6 +330,12 @@ async function assembleTrackerState(activeUserId) {
 }
 
 async function upsertUserSettings(userId, partial) {
+  // Validate user exists
+  const profileUser = await getProfileUserById(userId);
+  if (!profileUser) {
+    throw Object.assign(new Error('Profile user not found.'), { statusCode: 404 });
+  }
+
   const current = await knex('user_settings').where({ user_id: userId }).first();
   const next = {
     weekly_workout_goal: partial.weeklyWorkoutGoal ?? current?.weekly_workout_goal ?? WEEKLY_WORKOUT_GOAL,
@@ -456,31 +360,39 @@ async function upsertUserSettings(userId, partial) {
 }
 
 async function toggleActivityForDay(userId, dateKey, activityId) {
-  console.log('toggleActivityForDay called:', { userId, dateKey, activityId });
-  
+  if (!userId) {
+    throw Object.assign(new Error('userId is required'), { statusCode: 400 });
+  }
+
+  // Validate user exists
+  const profileUser = await getProfileUserById(userId);
+  if (!profileUser) {
+    throw Object.assign(new Error('Profile user not found.'), { statusCode: 404 });
+  }
+
   const activity = await knex('activities').where({ id: activityId, is_active: 1 }).first();
   if (!activity) throw Object.assign(new Error('Activity not found.'), { statusCode: 404 });
 
   const week = await getOrCreateWeekForDate(userId, dateKey);
-  console.log('Week:', week);
   const day = await getOrCreateDay(week.id, dateKey);
-  console.log('Day:', day);
 
   const existing = await knex('tracker_day_activities').where({ day_id: day.id, activity_id: activityId }).first();
-  console.log('Existing activity:', existing);
-  
   if (existing) {
     await knex('tracker_day_activities').where({ id: existing.id }).del();
-    console.log('Deleted activity, returning toggledOn: false');
     return { toggledOn: false };
   }
 
   await knex('tracker_day_activities').insert({ day_id: day.id, activity_id: activityId });
-  console.log('Inserted activity, returning toggledOn: true');
   return { toggledOn: true };
 }
 
 async function setDayActivities(userId, dateKey, activityIds) {
+  // Validate user exists
+  const profileUser = await getProfileUserById(userId);
+  if (!profileUser) {
+    throw Object.assign(new Error('Profile user not found.'), { statusCode: 404 });
+  }
+
   const week = await getOrCreateWeekForDate(userId, dateKey);
   const day = await getOrCreateDay(week.id, dateKey);
 
@@ -527,6 +439,12 @@ function mapWeightRow(row) {
 }
 
 async function upsertWeightLog(userId, weightInput) {
+  // Validate user exists
+  const profileUser = await getProfileUserById(userId);
+  if (!profileUser) {
+    throw Object.assign(new Error('Profile user not found.'), { statusCode: 404 });
+  }
+
   const weekStart = weightInput.weekStart ? toDateKey(getWeekStart(fromDateKey(weightInput.weekStart))) : toDateKey(getWeekStart(new Date()));
   const weightValue = Number(weightInput.weightValue ?? weightInput.weight);
   const unit = weightInput.unit === 'lb' ? 'lb' : 'kg';
@@ -561,30 +479,24 @@ async function upsertWeightLog(userId, weightInput) {
 }
 
 async function getWeightProgress(userId) {
-  console.log('getWeightProgress called for userId:', userId);
   const rows = await knex('weight_logs').where({ user_id: userId }).orderBy('week_start', 'desc').orderBy('updated_at', 'desc');
-  console.log('Weight rows from database:', rows);
   const currentWeekStart = toDateKey(getWeekStart(new Date()));
-  console.log('Current week start:', currentWeekStart);
-  
+
   // Normalize database week_start to string format for comparison
   const normalizedRows = rows.map(row => ({
     ...row,
-    week_start_normalized: typeof row.week_start === 'string' 
+    week_start_normalized: typeof row.week_start === 'string'
       ? row.week_start.includes('T') ? row.week_start.split('T')[0] : row.week_start
       : toDateKey(new Date(row.week_start))
   }));
-  console.log('Normalized rows:', normalizedRows);
-  
+
   const current = normalizedRows.find((row) => row.week_start_normalized === currentWeekStart) || null;
   const previous = normalizedRows.find((row) => row.week_start_normalized < currentWeekStart) || null;
-  console.log('Current week entry:', current);
-  console.log('Previous week entry:', previous);
-  
+
   const delta = current && previous ? Number((Number(current.weight_value) - Number(previous.weight_value)).toFixed(2)) : null;
   const percentChange = current && previous && Number(previous.weight_value) !== 0 ? Number((((Number(current.weight_value) - Number(previous.weight_value)) / Number(previous.weight_value)) * 100).toFixed(2)) : null;
 
-  const result = {
+  return {
     currentWeekStart,
     currentWeight: current ? Number(current.weight_value) : null,
     previousWeight: previous ? Number(previous.weight_value) : null,
@@ -594,10 +506,6 @@ async function getWeightProgress(userId) {
     unit: current?.unit || previous?.unit || 'kg',
     entries: rows.map(mapWeightRow),
   };
-  console.log('Weight progress result:', result);
-  console.log('Result currentWeight type:', typeof result.currentWeight);
-  console.log('Result currentWeight value:', result.currentWeight);
-  return result;
 }
 
 app.get('/health', (req, res) => res.json({ success: true, data: { status: 'healthy' } }));
@@ -605,10 +513,13 @@ app.get('/health', (req, res) => res.json({ success: true, data: { status: 'heal
 app.use('/api', requireApiKey);
 
 // ---------- auth ----------
+// Stateless login: validates credentials and hands back the auth + profile
+// user. The frontend is responsible for storing the returned userId (in
+// localStorage) and sending it with every subsequent request.
 app.post(
   '/api/auth/login',
   asyncHandler(async (req, res) => {
-    const { username, password, rememberMe } = req.body || {};
+    const { username, password } = req.body || {};
     if (!username || !password) return res.status(400).json({ success: false, message: 'Username and password are required.' });
 
     const authUser = await knex('auth_users').where({ username, is_active: 1 }).first();
@@ -618,34 +529,6 @@ app.post(
 
     const profileUser = await getProfileUserById(authUser.default_profile_user_id);
 
-    req.session.regenerate((err) => {
-      if (err) throw err;
-      req.session.authUserId = authUser.id;
-      req.session.activeProfileUserId = profileUser?.id;
-      console.log("LOGIN SESSION BEFORE SAVE:", {
-  sid: req.session,
-  authUserId: req.session.authUserId,
-  activeProfileUserId: req.session.activeProfileUserId
-});
-      req.session.cookie.maxAge = rememberMe ? 1000 * 60 * 60 * 24 * 30 : 1000 * 60 * 60 * 24 * 7;
-      req.session.save((saveErr) => {
-        if (saveErr) throw saveErr;
-        res.json({ success: true, data: { authenticated: true, user: authUser, profileUser } });
-      });
-    });
-  }),
-);
-
-app.post('/api/auth/logout', requireSessionAuth, (req, res) => {
-  req.session.destroy(() => res.json({ success: true, data: { authenticated: false } }));
-});
-
-app.get(
-  '/api/auth/me',
-  requireSessionAuth,
-  asyncHandler(async (req, res) => {
-    const authUser = await knex('auth_users').where({ id: req.session.authUserId }).first();
-    const profileUser = await getProfileUserById(req.session.activeProfileUserId);
     res.json({ success: true, data: { authenticated: true, user: authUser, profileUser } });
   }),
 );
@@ -653,16 +536,16 @@ app.get(
 // ---------- users ----------
 app.get(
   '/api/users',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
     const users = await knex('app_users').where({ is_active: 1 }).orderBy('sort_order');
-    res.json({ success: true, data: { users, activeUserId: req.session.activeProfileUserId } });
+    res.json({ success: true, data: { users, activeUserId: getEffectiveUserId(req) } });
   }),
 );
 
 app.post(
   '/api/users',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
     const { id, name, accent, ring, sortOrder = 0, isActive = true } = req.body || {};
     if (!id || !name || !accent || !ring) return res.status(400).json({ success: false, message: 'id, name, accent, and ring are required.' });
@@ -678,7 +561,7 @@ app.post(
 
 app.patch(
   '/api/users/:userId',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
     const existing = await getProfileUserById(req.params.userId);
     if (!existing) return res.status(404).json({ success: false, message: 'User not found.' });
@@ -697,7 +580,7 @@ app.patch(
 
 app.delete(
   '/api/users/:userId',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
     await knex('app_users').where({ id: req.params.userId }).update({ is_active: 0 });
     res.json({ success: true, data: { userId: req.params.userId } });
@@ -707,7 +590,7 @@ app.delete(
 // ---------- activity groups ----------
 app.get(
   '/api/activity-groups',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
     const groups = await knex('activity_groups').where({ is_active: 1 }).orderBy('sort_order');
     res.json({ success: true, data: { activityGroups: groups } });
@@ -716,7 +599,7 @@ app.get(
 
 app.post(
   '/api/activity-groups',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
     const { id, name, description, category, sortOrder = 0, isActive = true } = req.body || {};
     if (!id || !name || !description || !category) return res.status(400).json({ success: false, message: 'id, name, description, and category are required.' });
@@ -732,7 +615,7 @@ app.post(
 
 app.patch(
   '/api/activity-groups/:groupId',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
     const existing = await knex('activity_groups').where({ id: req.params.groupId }).first();
     if (!existing) return res.status(404).json({ success: false, message: 'Activity group not found.' });
@@ -751,7 +634,7 @@ app.patch(
 
 app.delete(
   '/api/activity-groups/:groupId',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
     await knex('activity_groups').where({ id: req.params.groupId }).update({ is_active: 0 });
     res.json({ success: true, data: { groupId: req.params.groupId } });
@@ -761,7 +644,7 @@ app.delete(
 // ---------- activities ----------
 app.get(
   '/api/activities',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
     const activities = await knex('activities').where({ is_active: 1 }).orderBy('sort_order');
     res.json({ success: true, data: { activities } });
@@ -770,7 +653,7 @@ app.get(
 
 app.post(
   '/api/activities',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
     const { id, groupId, label, category, sortOrder = 0, countsTowardGoal = false, isHealthyHabit = false, isActive = true } = req.body || {};
     if (!id || !groupId || !label || !category) return res.status(400).json({ success: false, message: 'id, groupId, label, and category are required.' });
@@ -795,7 +678,7 @@ app.post(
 
 app.patch(
   '/api/activities/:activityId',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
     const existing = await knex('activities').where({ id: req.params.activityId }).first();
     if (!existing) return res.status(404).json({ success: false, message: 'Activity not found.' });
@@ -816,7 +699,7 @@ app.patch(
 
 app.delete(
   '/api/activities/:activityId',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
     await knex('activities').where({ id: req.params.activityId }).update({ is_active: 0 });
     res.json({ success: true, data: { activityId: req.params.activityId } });
@@ -826,27 +709,36 @@ app.delete(
 // ---------- tracker state ----------
 app.get(
   '/api/tracker/state',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const trackerState = await assembleTrackerState(req.session.activeProfileUserId);
+    const trackerState = await assembleTrackerState(getEffectiveUserId(req));
     res.json({ success: true, data: { trackerState } });
   }),
 );
 
 app.put(
   '/api/tracker/state',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
     const state = req.body.state || req.body;
-    const activeUserId = state.activeUserId || req.session.activeProfileUserId;
-    req.session.activeProfileUserId = activeUserId;
+    const activeUserId = getEffectiveUserId(req) || state.activeUserId;
 
-    for (const [userId, userState] of Object.entries(state.users || {})) {
-      const currentWeek = userState.currentWeek;
-      if (!currentWeek) continue;
-      for (const day of Object.values(currentWeek.days || {})) {
+    if (!activeUserId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
+
+    // Verify the user exists
+    const profileUser = await getProfileUserById(activeUserId);
+    if (!profileUser) {
+      return res.status(404).json({ success: false, message: 'Profile user not found.' });
+    }
+
+    // Only update the selected user, not all users in state.users
+    const userState = state.users?.[activeUserId];
+    if (userState?.currentWeek) {
+      for (const day of Object.values(userState.currentWeek.days || {})) {
         if (!day?.date) continue;
-        await setDayActivities(userId, day.date, Array.isArray(day.activityIds) ? day.activityIds : []);
+        await setDayActivities(activeUserId, day.date, Array.isArray(day.activityIds) ? day.activityIds : []);
       }
     }
 
@@ -856,13 +748,12 @@ app.put(
 
 app.patch(
   '/api/tracker/active-user',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.body.userId || req.body.activeUserId;
+    const userId = getEffectiveUserId(req) || req.body.activeUserId;
     const profileUser = await getProfileUserById(userId);
     if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
 
-    req.session.activeProfileUserId = profileUser.id;
     res.json({ success: true, data: { activeUserId: profileUser.id } });
   }),
 );
@@ -870,9 +761,12 @@ app.patch(
 // ---------- weekly progress ----------
 app.get(
   '/api/weekly-progress',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.query.userId || req.session.activeProfileUserId;
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
     const profileUser = await getProfileUserById(userId);
     if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
 
@@ -886,9 +780,13 @@ app.get(
 
 app.get(
   '/api/weekly-progress/current',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const profileUser = await getProfileUserById(req.session.activeProfileUserId);
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
+    const profileUser = await getProfileUserById(userId);
     if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
 
     const weekRow = await ensureCurrentWeek(profileUser.id);
@@ -902,12 +800,16 @@ app.get(
 // ---------- dashboard ----------
 app.get(
   '/api/dashboard',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const profileUser = await getProfileUserById(req.session.activeProfileUserId);
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
+    const profileUser = await getProfileUserById(userId);
     if (!profileUser) return res.status(404).json({ success: false, message: 'Active profile user not found.' });
 
-    const trackerState = await assembleTrackerState(req.session.activeProfileUserId);
+    const trackerState = await assembleTrackerState(userId);
     const activeUser = trackerState.users[trackerState.activeUserId];
     const activeSummary = await createWeekSummary(activeUser.currentWeek);
     const activityGroups = await knex('activity_groups').where({ is_active: 1 }).orderBy('sort_order');
@@ -954,12 +856,16 @@ app.get(
 
 app.get(
   '/api/dashboard/stats',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const weekRow = await ensureCurrentWeek(req.session.activeProfileUserId);
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
+    const weekRow = await ensureCurrentWeek(userId);
     const currentWeek = await loadWeekWithDays(weekRow);
     const summary = await createWeekSummary(currentWeek);
-    const weightProgress = await getWeightProgress(req.session.activeProfileUserId);
+    const weightProgress = await getWeightProgress(userId);
     res.json({
       success: true,
       data: {
@@ -982,9 +888,12 @@ app.get(
 // ---------- weight ----------
 app.get(
   '/api/weight',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.query.userId || req.session.activeProfileUserId;
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
     const profileUser = await getProfileUserById(userId);
     if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
 
@@ -992,44 +901,44 @@ app.get(
   }),
 );
 
-app.get(
-  '/api/weight/progress',
-  requireSessionAuth,
-  asyncHandler(async (req, res) => {
-    const userId = req.query.userId || req.session.activeProfileUserId;
-    const profileUser = await getProfileUserById(userId);
-    if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
+app.get('/api/weight/progress', requireAuth, asyncHandler(async (req, res) => {
+  const userId = getEffectiveUserId(req);
+  if (!userId) {
+    return res.status(400).json({ success: false, message: 'Missing userId' });
+  }
 
-    res.json({ success: true, data: { user: profileUser, weightProgress: await getWeightProgress(userId) } });
-  }),
-);
+  const progress = await getWeightProgress(userId);
+  res.json({ success: true, data: { weightProgress: progress } });
+}));
 
 app.post(
   '/api/weight',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    console.log('Weight POST request:', req.body);
-    const userId = req.body.userId || req.session.activeProfileUserId;
-    console.log('User ID:', userId);
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
     const profileUser = await getProfileUserById(userId);
     if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
 
     // Ensure weight logs table exists
     await ensureWeightLogsTable();
-    
+
     const weightProgress = await upsertWeightLog(userId, req.body || {});
-    console.log('Weight progress result:', weightProgress);
-    console.log('Weight progress currentWeight:', weightProgress.currentWeight);
-    console.log('Weight progress currentWeight type:', typeof weightProgress.currentWeight);
     res.status(201).json({ success: true, data: { user: profileUser, weightProgress } });
   }),
 );
 
 app.patch(
   '/api/weight/:weightId',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const existing = await knex('weight_logs').where({ id: req.params.weightId, user_id: req.body.userId || req.session.activeProfileUserId }).first();
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
+    const existing = await knex('weight_logs').where({ id: req.params.weightId, user_id: userId }).first();
     if (!existing) return res.status(404).json({ success: false, message: 'Weight entry not found.' });
 
     const nextWeightValue = req.body.weightValue ?? req.body.weight ?? existing.weight_value;
@@ -1053,9 +962,13 @@ app.patch(
 
 app.delete(
   '/api/weight/:weightId',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const existing = await knex('weight_logs').where({ id: req.params.weightId, user_id: req.query.userId || req.session.activeProfileUserId }).first();
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
+    const existing = await knex('weight_logs').where({ id: req.params.weightId, user_id: userId }).first();
     if (!existing) return res.status(404).json({ success: false, message: 'Weight entry not found.' });
 
     await knex('weight_logs').where({ id: existing.id }).del();
@@ -1066,9 +979,12 @@ app.delete(
 // ---------- reminders ----------
 app.get(
   '/api/reminders',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.query.userId || req.session.activeProfileUserId;
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
     const profileUser = await getProfileUserById(userId);
     if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
 
@@ -1079,7 +995,7 @@ app.get(
 
 app.post(
   '/api/reminders',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
     const { userId, message } = req.body || {};
     const reminderKey = req.body.reminderKey || toDateKey(new Date());
@@ -1101,9 +1017,12 @@ app.post(
 
 app.post(
   '/api/reminders/evaluate',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.query.userId || req.session.activeProfileUserId;
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
     const profileUser = await getProfileUserById(userId);
     if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
 
@@ -1128,9 +1047,12 @@ app.post(
 // ---------- notifications ----------
 app.get(
   '/api/notifications',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.query.userId || req.session.activeProfileUserId;
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
     const profileUser = await getProfileUserById(userId);
     if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
 
@@ -1141,10 +1063,14 @@ app.get(
 
 app.post(
   '/api/notifications/:notificationId/read',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
     await knex('notifications')
-      .where({ id: req.params.notificationId, user_id: req.session.activeProfileUserId })
+      .where({ id: req.params.notificationId, user_id: userId })
       .whereNull('read_at')
       .update({ read_at: knex.fn.now() });
     res.json({ success: true, data: { notificationId: req.params.notificationId } });
@@ -1153,19 +1079,26 @@ app.post(
 
 app.post(
   '/api/notifications/read-all',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    await knex('notifications').where({ user_id: req.session.activeProfileUserId }).whereNull('read_at').update({ read_at: knex.fn.now() });
-    res.json({ success: true, data: { userId: req.session.activeProfileUserId } });
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
+    await knex('notifications').where({ user_id: userId }).whereNull('read_at').update({ read_at: knex.fn.now() });
+    res.json({ success: true, data: { userId } });
   }),
 );
 
 // ---------- settings ----------
 app.get(
   '/api/settings',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.query.userId || req.session.activeProfileUserId;
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
     const profileUser = await getProfileUserById(userId);
     if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
 
@@ -1174,7 +1107,7 @@ app.get(
 );
 
 async function handleSettingsUpdate(req, res) {
-  const userId = req.body.userId || req.query.userId || req.session.activeProfileUserId;
+  const userId = getEffectiveUserId(req);
   const profileUser = await getProfileUserById(userId);
   if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
 
@@ -1182,15 +1115,18 @@ async function handleSettingsUpdate(req, res) {
   res.json({ success: true, data: { user: profileUser, settings } });
 }
 
-app.put('/api/settings', requireSessionAuth, asyncHandler(handleSettingsUpdate));
-app.patch('/api/settings', requireSessionAuth, asyncHandler(handleSettingsUpdate));
+app.put('/api/settings', requireAuth, asyncHandler(handleSettingsUpdate));
+app.patch('/api/settings', requireAuth, asyncHandler(handleSettingsUpdate));
 
 // ---------- tracker days ----------
 app.get(
   '/api/tracker/days/:dateKey',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.query.userId || req.session.activeProfileUserId;
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
     const profileUser = await getProfileUserById(userId);
     if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
 
@@ -1202,27 +1138,25 @@ app.get(
   }),
 );
 
-app.post(
-  '/api/tracker/days/:dateKey/activities',
-  requireSessionAuth,
-  asyncHandler(async (req, res) => {
-    const userId = req.query.userId || req.session.activeProfileUserId;
-    const profileUser = await getProfileUserById(userId);
-    if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
-    if (!req.body?.activityId) return res.status(400).json({ success: false, message: 'activityId is required.' });
+app.post('/api/tracker/days/:dateKey/activities', requireAuth, asyncHandler(async (req, res) => {
+  const userId = getEffectiveUserId(req);
+  if (!userId) {
+    return res.status(400).json({ success: false, message: 'Missing userId' });
+  }
 
-    const result = await toggleActivityForDay(userId, req.params.dateKey, req.body.activityId);
-    res.json({ success: true, data: { userId, dateKey: req.params.dateKey, activityId: req.body.activityId, toggledOn: result.toggledOn } });
-  }),
-);
+  const { activityId } = req.body;
+  const result = await toggleActivityForDay(userId, req.params.dateKey, activityId);
+  res.json({ success: true, data: result });
+}));
 
 app.put(
   '/api/tracker/days/:dateKey/activities',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.query.userId || req.session.activeProfileUserId;
-    const profileUser = await getProfileUserById(userId);
-    if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
 
     const activityIds = Array.isArray(req.body.activityIds) ? req.body.activityIds : [];
     await setDayActivities(userId, req.params.dateKey, activityIds);
@@ -1232,11 +1166,12 @@ app.put(
 
 app.delete(
   '/api/tracker/days/:dateKey/activities',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.query.userId || req.session.activeProfileUserId;
-    const profileUser = await getProfileUserById(userId);
-    if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
+    const userId = getEffectiveUserId(req);
+    if (!userId) {
+      return res.status(400).json({ success: false, message: 'Missing userId' });
+    }
 
     const week = await getOrCreateWeekForDate(userId, req.params.dateKey);
     const day = await getOrCreateDay(week.id, req.params.dateKey);
@@ -1248,9 +1183,9 @@ app.delete(
 
 app.post(
   '/api/tracker/days/:dateKey/activities/:activityId/toggle',
-  requireSessionAuth,
+  requireAuth,
   asyncHandler(async (req, res) => {
-    const userId = req.query.userId || req.session.activeProfileUserId;
+    const userId = getEffectiveUserId(req);
     const profileUser = await getProfileUserById(userId);
     if (!profileUser) return res.status(404).json({ success: false, message: 'Profile user not found.' });
 

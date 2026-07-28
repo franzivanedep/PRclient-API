@@ -189,7 +189,7 @@ INSERT INTO auth_users (username, password, default_profile_user_id, is_active) 
   ('ladyv', 'passwordfitness@123', 'user_ladyv', 1);
 
 
-  UPDATE activities SET id='incline-1h' WHERE id='incline_walk_1h';
+UPDATE activities SET id='incline-1h' WHERE id='incline_walk_1h';
 
 UPDATE activities SET id='incline-90m' WHERE id='incline_walk_15h';
 
