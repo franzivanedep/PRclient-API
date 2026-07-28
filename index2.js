@@ -628,7 +628,6 @@ app.post(
 });
       req.session.cookie.maxAge = rememberMe ? 1000 * 60 * 60 * 24 * 30 : 1000 * 60 * 60 * 24 * 7;
       req.session.save((saveErr) => {
-        console.log("SESSION STORE:", sessionStore);
         if (saveErr) throw saveErr;
         res.json({ success: true, data: { authenticated: true, user: authUser, profileUser } });
       });
